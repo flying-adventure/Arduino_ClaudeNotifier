@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "이 파일을 .claude/settings.json 또는 ~/.claude/settings.json에 병합하세요.",
+    "command 경로를 arduino_bridge.py의 실제 절대 경로로 바꿔주세요.",
+    "Windows 예시:  python C:\\Users\\YOU\\claude-arduino-hooks\\bridge\\arduino_bridge.py PreToolUse",
+    "macOS/Linux:   python3 /home/YOU/claude-arduino-hooks/bridge/arduino_bridge.py PreToolUse"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"/ABSOLUTE/PATH/TO/bridge/arduino_bridge.py\" PreToolUse"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"/ABSOLUTE/PATH/TO/bridge/arduino_bridge.py\" PostToolUse"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"/ABSOLUTE/PATH/TO/bridge/arduino_bridge.py\" Notification"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"/ABSOLUTE/PATH/TO/bridge/arduino_bridge.py\" Stop"
+          }
+        ]
+      }
+    ]
+  }
+}
