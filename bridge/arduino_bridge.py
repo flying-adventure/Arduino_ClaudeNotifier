@@ -146,8 +146,8 @@ def build_message(hook_type: str, event_data: dict) -> tuple[str, str]:
 
     if hook_type == "PreToolUse":
         if tool_name == "Bash":
-            # 전체 명령어 전송 (Arduino 스크롤로 확인 가능)
-            cmd = str(tool_input.get("command", "")).strip()[:120]
+            # unifont 16px 기준 한 줄 ~15자, 80자면 최대 6줄 → 스크롤로 확인 가능
+            cmd = str(tool_input.get("command", "")).strip()[:80]
             return "CONFIRM", f"Run this?\n$ {cmd}"
 
         if tool_name in ("Write", "Edit", "MultiEdit"):
@@ -170,7 +170,7 @@ def build_message(hook_type: str, event_data: dict) -> tuple[str, str]:
 
     if hook_type == "Notification":
         msg = str(event_data.get("message", "Hey, I need\nyour attention."))
-        return "NOTIFY", msg[:200]
+        return "NOTIFY", msg[:100]
 
     if hook_type == "Stop":
         return "NOTIFY", "All done!\nThat wasn't so bad."

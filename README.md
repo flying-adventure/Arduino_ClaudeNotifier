@@ -123,10 +123,29 @@ Arduino Uno
 
 Arduino IDE에서 **스케치 → 라이브러리 포함하기 → 라이브러리 관리** 열기:
 
-| 검색어 | 설치할 라이브러리 |
-|--------|-----------------|
-| `Adafruit SSD1306` | Adafruit SSD1306 |
-| `Adafruit GFX` | Adafruit GFX Library (SSD1306 설치 시 자동 추가) |
+| 검색어 | 설치할 라이브러리 | 용도 |
+|--------|-----------------|------|
+| `U8g2` | U8g2 by oliver | OLED 드라이버 + **한글 폰트** |
+
+> `Adafruit SSD1306` / `Adafruit GFX`는 더 이상 사용하지 않음 — 설치되어 있어도 무방.
+
+#### 폰트 크기 및 표시 용량
+
+| 영역 | 폰트 | 한 줄 용량 |
+|------|------|-----------|
+| 헤더 / 풋터 | `u8g2_font_6x12_tf` | ASCII 전용, 21자 |
+| 내용 | `u8g2_font_unifont_t_korean2` | ASCII 15자 or 한글 7자 |
+
+CONFIRM 모드는 2줄, NOTIFY 모드는 3줄 표시 (조이스틱으로 나머지 스크롤).
+
+#### ⚠️ Arduino Uno 플래시 경고
+
+`u8g2_font_unifont_t_korean2` 한글 폰트는 플래시를 많이 사용함.  
+업로드 시 **"Sketch too large"** 오류가 나면:
+
+1. **Arduino Mega 2560** (256KB 플래시) — 가장 간단한 해결책
+2. **ESP32 / STM32** 계열 보드로 교체
+3. 또는 `u8g2_font_unifont_t_korean1` (더 작은 서브셋)으로 교체 후 재시도
 
 ### 3-2. 업로드
 
@@ -221,14 +240,14 @@ pip install -r requirements.txt
 Arduino IDE **시리얼 모니터** (속도: 9600, **줄 끝: Newline**)에서 직접 입력:
 
 ```
-CONFIRM:Run this?|$ git commit -m "feat: 로그인 화면 UI 추가" && npm run build
+CONFIRM:Run this?|$ git commit -m "feat: 로그인 화면 UI 추가"
 ```
-→ 긴 명령어가 여러 줄로 표시됨. 조이스틱으로 스크롤, SW 버튼 누르면 `OK` 출력
+→ 한글 포함 명령어가 줄 단위로 표시됨. 조이스틱으로 스크롤, SW 버튼 누르면 `OK` 출력
 
 ```
-NOTIFY:All done!|That wasn't so bad.
+NOTIFY:작업 완료!|파일이 저장되었습니다.
 ```
-→ OLED에 두 줄로 메시지 표시
+→ 한글 알림 두 줄로 표시
 
 ```
 CLEAR
@@ -288,7 +307,7 @@ i2c_scanner로 실제 주소 확인. 펌웨어는 `0x3C → 0x3D` 자동 시도.
 SDA ↔ SCL이 바뀌지 않았는지, VCC가 5V에 연결됐는지 확인.
 
 **원인 3: 라이브러리 미설치**  
-Adafruit SSD1306, Adafruit GFX Library 둘 다 설치 필요.
+U8g2 라이브러리 설치 필요 (라이브러리 매니저에서 "U8g2" 검색).
 
 ---
 

@@ -1,96 +1,118 @@
 #include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <U8g2lib.h>
 
-#define SCREEN_WIDTH  128
-#define SCREEN_HEIGHT 64
-#define OLED_RESET    -1
-#define I2C_ADDR_PRIMARY  0x3C
-#define I2C_ADDR_FALLBACK 0x3D
+// SSD1306 128×64 I2C, 전체 버퍼 모드 (한글 렌더링 가능)
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
 
 // 조이스틱 핀
 #define JOYSTICK_VRY        A1
 #define JOYSTICK_SW         3
-
-// 조이스틱 임계값 및 자동반복 타이밍
 #define JOY_THRESHOLD_LOW   200
 #define JOY_THRESHOLD_HIGH  800
 #define JOY_REPEAT_DELAY    400UL
 #define JOY_REPEAT_INTERVAL 150UL
 #define DEBOUNCE_MS         50UL
 
-// 레이아웃 상수 (텍스트 size 1 = 6×8px, 20자 × 6px = 120px → 오른쪽 8px에 화살표)
-#define CHARS_PER_LINE  20
-#define VISIBLE_CONFIRM  4   // CONFIRM 모드: 헤더+푸터 제외 4줄
-#define VISIBLE_NOTIFY   6   // NOTIFY 모드: 헤더만 제외 6줄
+// 레이아웃
+// - 헤더/풋터: u8g2_font_6x12_tf  (6×12px, ASCII 전용)
+// - 내용:      u8g2_font_unifont_t_korean2  (unifont 16px, 한글 포함)
+//   ASCII = 8px 너비, 한글 = 16px 너비
+#define HEADER_Y         9    // 헤더 텍스트 baseline
+#define HDR_DIV_Y        10   // 헤더 구분선
+#define CONTENT_Y0       24   // 첫 줄 baseline (unifont: ascent ~13px → top=y-13)
+#define LINE_STEP        16   // 줄 간격
+#define PIXEL_LINE_WIDTH 120  // 내용 너비 (128 - 8px 화살표 영역)
+#define FOOTER_DIV_Y     52   // CONFIRM 풋터 구분선
+#define FOOTER_Y         62   // CONFIRM 풋터 텍스트 baseline
+#define VISIBLE_CONFIRM   2   // CONFIRM 모드 가시 줄 수
+#define VISIBLE_NOTIFY    3   // NOTIFY  모드 가시 줄 수
+#define MAX_LINES        12   // 최대 저장 줄 수
 
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+// 줄 위치 정보 (currentMsg 내 byte 오프셋 · 길이)
+struct LineSpan {
+    uint16_t start;
+    uint16_t len;
+};
 
-String inputBuffer = "";
-bool waitingForConfirm = false;
+String   inputBuffer = "";
+bool     waitingForConfirm = false;
 
-// 현재 표시 중인 메시지 ('|'를 줄 구분자로 사용)
-String currentMsg = "";
-int    totalLines = 0;
-int    scrollOffset = 0;
-bool   currentNeedsConfirm = false;
+String   currentMsg = "";
+LineSpan lineSpans[MAX_LINES];
+int      totalLines   = 0;
+int      scrollOffset = 0;
+bool     currentNeedsConfirm = false;
 
-// 조이스틱 스크롤 상태
-int           joyDir       = 0;        // -1=위, 0=중립, 1=아래
+int           joyDir       = 0;
 unsigned long joyPressTime  = 0;
 unsigned long joyRepeatTime = 0;
 bool          joyRepeating  = false;
-
-// SW 디바운스 상태
-unsigned long lastSwTime   = 0;
-bool          swWasPressed = false;
+unsigned long lastSwTime    = 0;
+bool          swWasPressed  = false;
 
 // ──────────────────────────────────────────────
-// 라인 계산 헬퍼 ('|' 구분자 + CHARS_PER_LINE 강제 줄바꿈)
+// UTF-8 헬퍼
 // ──────────────────────────────────────────────
 
-int calcTotalLines(const String& msg) {
-  if (msg.length() == 0) return 0;
-  int count = 0;
-  int pos = 0;
-  int len = (int)msg.length();
-  while (pos <= len) {
-    int sep    = msg.indexOf('|', pos);
-    int segEnd = (sep < 0) ? len : sep;
-    int segLen = segEnd - pos;
-    count += (segLen == 0) ? 1 : (segLen + CHARS_PER_LINE - 1) / CHARS_PER_LINE;
-    pos = (sep < 0) ? len + 1 : sep + 1;
-  }
-  return count;
+// 첫 바이트로 시퀀스 바이트 수 반환
+static int utf8ByteLen(uint8_t b) {
+    if (b < 0x80) return 1;
+    if (b < 0xE0) return 2;
+    if (b < 0xF0) return 3;
+    return 4;
 }
 
-// idx번째 표시 줄 반환 (0-based)
-String getLine(const String& msg, int idx) {
-  int count = 0;
-  int pos   = 0;
-  int len   = (int)msg.length();
-  while (pos <= len) {
-    int sep      = msg.indexOf('|', pos);
-    int segEnd   = (sep < 0) ? len : sep;
-    int segStart = pos;
-    int segLen   = segEnd - segStart;
-    pos = (sep < 0) ? len + 1 : sep + 1;
+// unifont 기준 픽셀 너비: ASCII/Latin(1~2바이트) = 8px, CJK·한글(3~4바이트) = 16px
+static int utf8PixelWidth(uint8_t b) {
+    return (b < 0xE0) ? 8 : 16;
+}
 
-    if (segLen == 0) {
-      if (count == idx) return "";
-      count++;
-      continue;
-    }
+// ──────────────────────────────────────────────
+// 줄 분리 ('|' 구분자 + 픽셀 너비 기반 래핑)
+// ──────────────────────────────────────────────
 
-    int segLines = (segLen + CHARS_PER_LINE - 1) / CHARS_PER_LINE;
-    if (idx < count + segLines) {
-      int off     = (idx - count) * CHARS_PER_LINE;
-      int copyEnd = min(segStart + off + CHARS_PER_LINE, segEnd);
-      return msg.substring(segStart + off, copyEnd);
+void splitIntoLines(const String& msg) {
+    totalLines   = 0;
+    scrollOffset = 0;
+
+    int pos    = 0;
+    int msgLen = (int)msg.length();
+
+    while (pos <= msgLen && totalLines < MAX_LINES) {
+        int sep    = msg.indexOf('|', pos);
+        int segEnd = (sep < 0) ? msgLen : sep;
+
+        if (pos == segEnd) {
+            lineSpans[totalLines++] = {(uint16_t)pos, 0};
+        } else {
+            int sp = pos;
+            while (sp < segEnd && totalLines < MAX_LINES) {
+                int lineStart = sp;
+                int pixels    = 0;
+                while (sp < segEnd) {
+                    uint8_t b  = (uint8_t)msg[sp];
+                    int     pw = utf8PixelWidth(b);
+                    int     bl = utf8ByteLen(b);
+                    if (sp + bl > segEnd) bl = 1;          // 잘린 시퀀스 방어
+                    if (pixels + pw > PIXEL_LINE_WIDTH) break;
+                    pixels += pw;
+                    sp     += bl;
+                }
+                lineSpans[totalLines++] = {
+                    (uint16_t)lineStart,
+                    (uint16_t)(sp - lineStart)
+                };
+            }
+        }
+
+        pos = (sep < 0) ? msgLen + 1 : sep + 1;
     }
-    count += segLines;
-  }
-  return "";
+}
+
+String getLine(int idx) {
+    if (idx < 0 || idx >= totalLines) return "";
+    const LineSpan& s = lineSpans[idx];
+    return currentMsg.substring(s.start, s.start + s.len);
 }
 
 // ──────────────────────────────────────────────
@@ -98,51 +120,52 @@ String getLine(const String& msg, int idx) {
 // ──────────────────────────────────────────────
 
 void setup() {
-  Serial.begin(9600);
-  pinMode(JOYSTICK_SW, INPUT_PULLUP);
+    Serial.begin(9600);
+    pinMode(JOYSTICK_SW, INPUT_PULLUP);
 
-  // I2C 주소 0x3C 먼저 시도, 실패하면 0x3D
-  if (!display.begin(SSD1306_SWITCHCAPVCC, I2C_ADDR_PRIMARY)) {
-    if (!display.begin(SSD1306_SWITCHCAPVCC, I2C_ADDR_FALLBACK)) {
-      for (;;);
+    // I2C 주소 탐색 (0x3C 먼저, 없으면 0x3D)
+    Wire.begin();
+    Wire.beginTransmission(0x3C);
+    if (Wire.endTransmission() != 0) {
+        u8g2.setI2CAddress(0x7A);   // 0x3D << 1 (U8g2는 8비트 주소 사용)
     }
-  }
 
-  showReady();
+    u8g2.begin();
+    showReady();
 }
 
 void loop() {
-  // 시리얼 수신 처리
-  while (Serial.available()) {
-    char c = (char)Serial.read();
-    if (c == '\n') {
-      inputBuffer.trim();
-      if (inputBuffer.length() > 0) processCommand(inputBuffer);
-      inputBuffer = "";
-    } else if (c != '\r' && inputBuffer.length() < 160) {
-      inputBuffer += c;
+    // 시리얼 수신
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\n') {
+            inputBuffer.trim();
+            if (inputBuffer.length() > 0) processCommand(inputBuffer);
+            inputBuffer = "";
+        } else if (c != '\r' && inputBuffer.length() < 160) {
+            inputBuffer += c;
+        }
     }
-  }
 
-  // 조이스틱 SW 상태 읽기 (엣지 감지)
-  bool swPressed = (digitalRead(JOYSTICK_SW) == LOW);
-  unsigned long now = millis();
-  bool swJustPressed = swPressed && !swWasPressed && (now - lastSwTime > DEBOUNCE_MS);
-  if (swJustPressed) lastSwTime = now;
+    // SW 엣지 감지
+    bool swPressed = (digitalRead(JOYSTICK_SW) == LOW);
+    unsigned long now = millis();
+    bool swJustPressed = swPressed && !swWasPressed && (now - lastSwTime > DEBOUNCE_MS);
+    if (swJustPressed) lastSwTime = now;
 
-  // CONFIRM 모드: SW 누르면 OK 전송
-  if (waitingForConfirm && swJustPressed) {
-    waitingForConfirm = false;
-    Serial.println("OK");
-    while (digitalRead(JOYSTICK_SW) == LOW);  // 뗄 때까지 대기
-    delay(100);
-    showReady();
-  }
+    // CONFIRM 승인
+    if (waitingForConfirm && swJustPressed) {
+        waitingForConfirm = false;
+        Serial.println("OK");
+        while (digitalRead(JOYSTICK_SW) == LOW);
+        delay(100);
+        showReady();
+    }
 
-  // 조이스틱 스크롤
-  if (totalLines > 0) handleJoystickScroll();
+    // 조이스틱 스크롤
+    if (totalLines > 0) handleJoystickScroll();
 
-  swWasPressed = swPressed;
+    swWasPressed = swPressed;
 }
 
 // ──────────────────────────────────────────────
@@ -150,26 +173,24 @@ void loop() {
 // ──────────────────────────────────────────────
 
 void processCommand(const String& cmd) {
-  if (cmd.startsWith("CONFIRM:")) {
-    currentMsg          = cmd.substring(8);
-    totalLines          = calcTotalLines(currentMsg);
-    scrollOffset        = 0;
-    currentNeedsConfirm = true;
-    waitingForConfirm   = true;
-    renderScrollView();
-  } else if (cmd.startsWith("NOTIFY:")) {
-    currentMsg          = cmd.substring(7);
-    totalLines          = calcTotalLines(currentMsg);
-    scrollOffset        = 0;
-    currentNeedsConfirm = false;
-    waitingForConfirm   = false;
-    renderScrollView();
-  } else if (cmd == "CLEAR") {
-    currentMsg = "";
-    totalLines = 0;
-    waitingForConfirm = false;
-    showReady();
-  }
+    if (cmd.startsWith("CONFIRM:")) {
+        currentMsg          = cmd.substring(8);
+        splitIntoLines(currentMsg);
+        currentNeedsConfirm = true;
+        waitingForConfirm   = true;
+        renderScrollView();
+    } else if (cmd.startsWith("NOTIFY:")) {
+        currentMsg          = cmd.substring(7);
+        splitIntoLines(currentMsg);
+        currentNeedsConfirm = false;
+        waitingForConfirm   = false;
+        renderScrollView();
+    } else if (cmd == "CLEAR") {
+        currentMsg = "";
+        totalLines = 0;
+        waitingForConfirm = false;
+        showReady();
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -177,91 +198,84 @@ void processCommand(const String& cmd) {
 // ──────────────────────────────────────────────
 
 void renderScrollView() {
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
+    u8g2.clearBuffer();
 
-  // 헤더 (y=0~10)
-  display.setCursor(0, 0);
-  display.print(F("[ Claude ]"));
-  if (currentNeedsConfirm) {
-    display.setCursor(66, 0);
-    display.print(F("CONFIRM"));
-  }
-  display.drawFastHLine(0, 10, SCREEN_WIDTH, SSD1306_WHITE);
+    // 헤더 (6x12 소형 폰트)
+    u8g2.setFont(u8g2_font_6x12_tf);
+    u8g2.drawStr(0, HEADER_Y, "[ Claude ]");
+    if (currentNeedsConfirm) {
+        u8g2.drawStr(66, HEADER_Y, "CONFIRM");
+    }
+    u8g2.drawHLine(0, HDR_DIV_Y, 128);
 
-  int visible   = currentNeedsConfirm ? VISIBLE_CONFIRM : VISIBLE_NOTIFY;
-  int maxOffset = max(0, totalLines - visible);
+    int visible   = currentNeedsConfirm ? VISIBLE_CONFIRM : VISIBLE_NOTIFY;
+    int maxOffset = max(0, totalLines - visible);
 
-  // 텍스트 출력 (x=0, 20자 = 120px, y=14부터 8px 간격)
-  for (int i = 0; i < visible && (scrollOffset + i) < totalLines; i++) {
-    display.setCursor(0, 14 + i * 8);
-    display.print(getLine(currentMsg, scrollOffset + i));
-  }
+    // 내용 (unifont 한글 포함)
+    u8g2.setFont(u8g2_font_unifont_t_korean2);
+    for (int i = 0; i < visible && (scrollOffset + i) < totalLines; i++) {
+        String line = getLine(scrollOffset + i);
+        u8g2.drawUTF8(0, CONTENT_Y0 + i * LINE_STEP, line.c_str());
+    }
 
-  // 스크롤 화살표 (x=121, 텍스트 영역 오른쪽)
-  if (scrollOffset > 0) {
-    display.setCursor(121, 14);
-    display.print(F("^"));
-  }
-  if (scrollOffset < maxOffset) {
-    display.setCursor(121, 14 + (visible - 1) * 8);
-    display.print(F("v"));
-  }
+    // 스크롤 화살표 (x=122, 6x12 폰트)
+    u8g2.setFont(u8g2_font_6x12_tf);
+    if (scrollOffset > 0) {
+        u8g2.drawStr(122, CONTENT_Y0, "^");
+    }
+    if (scrollOffset < maxOffset) {
+        u8g2.drawStr(122, CONTENT_Y0 + (visible - 1) * LINE_STEP, "v");
+    }
 
-  // CONFIRM 푸터 (y=52~63)
-  if (currentNeedsConfirm) {
-    display.drawFastHLine(0, 52, SCREEN_WIDTH, SSD1306_WHITE);
-    display.setCursor(0, 55);
-    display.print(F("[SW] Confirm"));
-  }
+    // CONFIRM 풋터
+    if (currentNeedsConfirm) {
+        u8g2.drawHLine(0, FOOTER_DIV_Y, 128);
+        u8g2.drawStr(0, FOOTER_Y, "[SW] Confirm");
+    }
 
-  display.display();
+    u8g2.sendBuffer();
 }
 
 // ──────────────────────────────────────────────
-// 조이스틱 스크롤 처리 (자동반복 포함)
+// 조이스틱 스크롤 (자동반복 포함)
 // ──────────────────────────────────────────────
 
 void handleJoystickScroll() {
-  int val    = analogRead(JOYSTICK_VRY);
-  int newDir = 0;
-  if (val < JOY_THRESHOLD_LOW)        newDir = -1;  // 위
-  else if (val > JOY_THRESHOLD_HIGH)  newDir = 1;   // 아래
+    int val    = analogRead(JOYSTICK_VRY);
+    int newDir = 0;
+    if (val < JOY_THRESHOLD_LOW)       newDir = -1;
+    else if (val > JOY_THRESHOLD_HIGH) newDir =  1;
 
-  unsigned long now = millis();
+    unsigned long now = millis();
 
-  if (newDir != 0) {
-    if (joyDir != newDir) {
-      // 방향 전환 시 즉시 첫 스크롤
-      joyDir       = newDir;
-      joyPressTime = now;
-      joyRepeating = false;
-      doScroll(newDir);
-    } else if (!joyRepeating && (now - joyPressTime >= JOY_REPEAT_DELAY)) {
-      // 첫 자동반복 발동
-      joyRepeating  = true;
-      joyRepeatTime = now;
-      doScroll(newDir);
-    } else if (joyRepeating && (now - joyRepeatTime >= JOY_REPEAT_INTERVAL)) {
-      // 연속 자동반복
-      joyRepeatTime = now;
-      doScroll(newDir);
+    if (newDir != 0) {
+        if (joyDir != newDir) {
+            joyDir       = newDir;
+            joyPressTime = now;
+            joyRepeating = false;
+            doScroll(newDir);
+        } else if (!joyRepeating && (now - joyPressTime >= JOY_REPEAT_DELAY)) {
+            joyRepeating  = true;
+            joyRepeatTime = now;
+            doScroll(newDir);
+        } else if (joyRepeating && (now - joyRepeatTime >= JOY_REPEAT_INTERVAL)) {
+            joyRepeatTime = now;
+            doScroll(newDir);
+        }
+    } else {
+        joyDir       = 0;
+        joyRepeating = false;
     }
-  } else {
-    joyDir       = 0;
-    joyRepeating = false;
-  }
 }
 
 void doScroll(int dir) {
-  int visible   = currentNeedsConfirm ? VISIBLE_CONFIRM : VISIBLE_NOTIFY;
-  int maxOffset = max(0, totalLines - visible);
-  int newOffset = constrain(scrollOffset + dir, 0, maxOffset);
-  if (newOffset != scrollOffset) {
-    scrollOffset = newOffset;
-    renderScrollView();
-  }
+    int visible   = currentNeedsConfirm ? VISIBLE_CONFIRM : VISIBLE_NOTIFY;
+    int maxOffset = max(0, totalLines - visible);
+    int newOffset = constrain(scrollOffset + dir, 0, maxOffset);
+    if (newOffset != scrollOffset) {
+        scrollOffset = newOffset;
+        renderScrollView();
+    }
 }
 
 // ──────────────────────────────────────────────
@@ -269,19 +283,14 @@ void doScroll(int dir) {
 // ──────────────────────────────────────────────
 
 void showReady() {
-  currentMsg = "";
-  totalLines = 0;
-  display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
+    currentMsg = "";
+    totalLines = 0;
 
-  display.setCursor(0, 0);
-  display.print(F("[ Claude ]"));
-  display.drawFastHLine(0, 10, SCREEN_WIDTH, SSD1306_WHITE);
-
-  display.setCursor(0, 24);
-  display.println(F("Waiting for"));
-  display.println(F("Claude Code..."));
-
-  display.display();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x12_tf);
+    u8g2.drawStr(0, HEADER_Y, "[ Claude ]");
+    u8g2.drawHLine(0, HDR_DIV_Y, 128);
+    u8g2.drawStr(0, 32, "Waiting for");
+    u8g2.drawStr(0, 44, "Claude Code...");
+    u8g2.sendBuffer();
 }
