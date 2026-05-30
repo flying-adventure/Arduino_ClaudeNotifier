@@ -17,7 +17,7 @@ Claude Code가 Bash 실행 직전
 └──────────────────────┘
         ↓
    조이스틱 꾹 누르기 → 실행 진행
-   30초 무응답 → 자동 진행
+   (타임아웃 없음 — 버튼 누를 때까지 대기)
 ```
 
 ### 스크롤 동작
@@ -288,9 +288,8 @@ Claude에게 Bash 명령 실행을 요청 → OLED에 전체 명령어가 스크
 `pyserial`이 설치되지 않았거나 Arduino가 연결되지 않은 경우:
 
 - 포트 탐색 실패 → **OLED 전송 없이 폴백**
-- `PreToolUse` (confirm 모드): **터미널에서 키보드 Enter 대기**
+- `PreToolUse` (confirm 모드): **터미널에서 키보드 Enter 대기 (무한 대기)**
 - `PostToolUse` / `Stop` (notify 모드): **3초 대기 후 자동 진행**
-- 30초 타임아웃 후 어떤 경우든 자동 진행
 
 **아두이노 없이도 Claude Code 작업이 중단되지 않음.**
 
@@ -349,15 +348,6 @@ return "/dev/cu.usbmodem14101"  # macOS
 **CH340 드라이버 미설치 (호환 보드):**  
 Windows: CH340 드라이버 설치 필요.  
 macOS Monterey 이상: 별도 드라이버 불필요.
-
----
-
-### 타임아웃 조정
-
-```python
-# bridge/arduino_bridge.py 상단
-TIMEOUT_SECONDS = 30  # 원하는 초로 변경
-```
 
 ---
 

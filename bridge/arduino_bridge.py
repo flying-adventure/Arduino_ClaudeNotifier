@@ -24,7 +24,6 @@ except ImportError:
 # 시리얼 포트 자동 탐색 키워드
 PORT_KEYWORDS = ["CH340", "Arduino", "USB Serial", "usbserial", "ttyUSB", "ttyACM"]
 BAUD_RATE = 9600
-TIMEOUT_SECONDS = 30
 
 # 훅별 기본 동작 모드
 HOOK_MODE = {
@@ -128,7 +127,7 @@ def run_confirm(ser: Optional["serial.Serial"]) -> None:
     threads.append(t)
     t.start()
 
-    done.wait(timeout=TIMEOUT_SECONDS)
+    done.wait()  # 버튼/Enter 입력 전까지 무한 대기
 
 
 # ──────────────────────────────────────────────
