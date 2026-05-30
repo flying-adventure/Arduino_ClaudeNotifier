@@ -13,6 +13,7 @@ import os
 import threading
 import argparse
 from typing import Optional
+from pathlib import Path
 
 try:
     import serial
@@ -24,6 +25,19 @@ except ImportError:
 # 시리얼 포트 자동 탐색 키워드
 PORT_KEYWORDS = ["CH340", "Arduino", "USB Serial", "usbserial", "ttyUSB", "ttyACM"]
 BAUD_RATE = 9600
+
+# OLED에 표시될 이름 — .env 파일의 USER_NAME 값 사용, 없으면 "주인님"
+def _load_env() -> None:
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, val = line.partition("=")
+                os.environ.setdefault(key.strip(), val.strip())
+
+_load_env()
+USER_NAME = os.environ.get("USER_NAME", "주인님")
 
 # 훅별 기본 동작 모드
 HOOK_MODE = {
@@ -145,36 +159,36 @@ def build_message(hook_type: str, event_data: dict) -> tuple[str, str]:
 
     if hook_type == "PreToolUse":
         if tool_name == "Bash":
-            # unifont 16px 기준 한 줄 ~15자, 80자면 최대 6줄 → 스크롤로 확인 가능
             cmd = str(tool_input.get("command", "")).strip()[:80]
-            return "CONFIRM", f"Run this?\n$ {cmd}"
+            return "CONFIRM", f"{USER_NAME}님! 이거 실행해도 될까요~?\n$ {cmd}"
 
         if tool_name in ("Write", "Edit", "MultiEdit"):
             path = str(tool_input.get("file_path", tool_input.get("path", "??")))[:60]
-            return "CONFIRM", f"Edit this?\n{path}"
+            return "CONFIRM", f"{USER_NAME}님! 파일 수정할게요~\n{path}"
 
         if tool_name:
-            return "CONFIRM", f"Use tool?\n{tool_name}"
+            return "CONFIRM", f"{USER_NAME}님!\n{tool_name} 써도 될까요?"
 
-        return "CONFIRM", "Should I proceed?"
+        return "CONFIRM", f"{USER_NAME}님!\n진행해도 될까요~?"
 
     if hook_type == "PostToolUse":
         if tool_name == "Bash":
-            return "NOTIFY", "Done!\nCommand finished."
+            return "NOTIFY", "실행 완료!\n잘 됐어요~"
         if tool_name in ("Write", "Edit", "MultiEdit"):
-            return "NOTIFY", "Done!\nFile saved."
+            return "NOTIFY", "저장 완료!\n파일 수정했어요~"
         if tool_name:
-            return "NOTIFY", f"Done!\n{tool_name} finished."
-        return "NOTIFY", "Done!"
+            return "NOTIFY", f"완료!\n{tool_name} 끝~"
+        return "NOTIFY", "완료!"
 
     if hook_type == "Notification":
-        msg = str(event_data.get("message", "Hey, I need\nyour attention."))
+        default = f"{USER_NAME}님!\n확인이 필요해요~"
+        msg = str(event_data.get("message", default))
         return "NOTIFY", msg[:100]
 
     if hook_type == "Stop":
-        return "NOTIFY", "All done!\nThat wasn't so bad."
+        return "NOTIFY", f"{USER_NAME}님!\n다 끝났어요~ 수고!"
 
-    return "NOTIFY", "Something happened!"
+    return "NOTIFY", "뭔가 일어났어요!"
 
 
 # ──────────────────────────────────────────────
