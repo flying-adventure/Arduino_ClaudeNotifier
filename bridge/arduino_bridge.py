@@ -21,7 +21,7 @@ try:
 except ImportError:
     SERIAL_AVAILABLE = False
 
-# 시리얼 포트 자동 탐색 키워드 (Windows COM 포트 포함)
+# 시리얼 포트 자동 탐색 키워드
 PORT_KEYWORDS = ["CH340", "Arduino", "USB Serial", "usbserial", "ttyUSB", "ttyACM"]
 BAUD_RATE = 9600
 TIMEOUT_SECONDS = 30
@@ -77,7 +77,7 @@ def send_command(ser: "serial.Serial", command: str) -> None:
 # ──────────────────────────────────────────────
 
 def _wait_arduino_button(ser: "serial.Serial", done: threading.Event) -> None:
-    """Arduino 버튼 입력 대기 (스레드용)"""
+    """Arduino SW 버튼 입력 대기 (스레드용)"""
     while not done.is_set():
         try:
             line = ser.readline().decode("utf-8", errors="ignore").strip()
@@ -117,7 +117,6 @@ def _wait_keyboard(done: threading.Event) -> None:
 def run_confirm(ser: Optional["serial.Serial"]) -> None:
     """버튼 / 키보드 Enter / 30초 타임아웃 중 먼저 오는 것으로 진행"""
     done = threading.Event()
-
     threads = []
 
     if ser:
@@ -130,7 +129,6 @@ def run_confirm(ser: Optional["serial.Serial"]) -> None:
     t.start()
 
     done.wait(timeout=TIMEOUT_SECONDS)
-    # done 이후 데몬 스레드들은 프로세스 종료 시 자동 정리됨
 
 
 # ──────────────────────────────────────────────
@@ -140,6 +138,7 @@ def run_confirm(ser: Optional["serial.Serial"]) -> None:
 def build_message(hook_type: str, event_data: dict) -> tuple[str, str]:
     """
     훅 이벤트 데이터로부터 (커맨드타입, OLED 메시지) 생성.
+    메시지 내 줄바꿈은 '|'로 인코딩되어 Arduino에서 분리됨.
     커맨드타입은 CONFIRM 또는 NOTIFY.
     """
     tool_name: str = event_data.get("tool_name", "")
@@ -147,32 +146,31 @@ def build_message(hook_type: str, event_data: dict) -> tuple[str, str]:
 
     if hook_type == "PreToolUse":
         if tool_name == "Bash":
-            cmd = str(tool_input.get("command", "")).strip()
-            preview = cmd[:35] + ("..." if len(cmd) > 35 else "")
-            return "CONFIRM", f"Should I run this?\n$ {preview}"
+            # 전체 명령어 전송 (Arduino 스크롤로 확인 가능)
+            cmd = str(tool_input.get("command", "")).strip()[:120]
+            return "CONFIRM", f"Run this?\n$ {cmd}"
 
         if tool_name in ("Write", "Edit", "MultiEdit"):
-            path = str(tool_input.get("file_path", tool_input.get("path", "??")))
-            short = path if len(path) <= 28 else "..." + path[-25:]
-            return "CONFIRM", f"Shall I edit this?\n{short}"
+            path = str(tool_input.get("file_path", tool_input.get("path", "??")))[:60]
+            return "CONFIRM", f"Edit this?\n{path}"
 
         if tool_name:
-            return "CONFIRM", f"Should I use\n{tool_name}?"
+            return "CONFIRM", f"Use tool?\n{tool_name}"
 
         return "CONFIRM", "Should I proceed?"
 
     if hook_type == "PostToolUse":
         if tool_name == "Bash":
-            return "NOTIFY", "Done! Command\nfinished."
+            return "NOTIFY", "Done!\nCommand finished."
         if tool_name in ("Write", "Edit", "MultiEdit"):
-            return "NOTIFY", "Done! File saved.\nLooks good."
+            return "NOTIFY", "Done!\nFile saved."
         if tool_name:
             return "NOTIFY", f"Done!\n{tool_name} finished."
         return "NOTIFY", "Done!"
 
     if hook_type == "Notification":
         msg = str(event_data.get("message", "Hey, I need\nyour attention."))
-        return "NOTIFY", msg[:55]
+        return "NOTIFY", msg[:200]
 
     if hook_type == "Stop":
         return "NOTIFY", "All done!\nThat wasn't so bad."
@@ -211,10 +209,11 @@ def main() -> None:
                 ser = connect_arduino(port)
 
         if ser:
-            send_command(ser, f"{cmd_type}:{message}")
+            # '\n'은 Arduino 시리얼 프로토콜 종단자이므로 '|'로 치환
+            encoded = message.replace("\n", "|")
+            send_command(ser, f"{cmd_type}:{encoded}")
 
         if cmd_type == "CONFIRM":
-            # 아두이노 없으면 키보드 Enter만 대기
             run_confirm(ser)
         else:
             # NOTIFY: 3초 표시 후 화면 정리
