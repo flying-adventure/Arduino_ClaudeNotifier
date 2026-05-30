@@ -2,3 +2,8 @@
 venv/
 __pycache__/
 *.pyc
+
+# SPIFFS 업로드 파일 (용량 큰 바이너리)
+arduino/firmware/data/*.gif
+arduino/firmware/data/*.GIF
+arduino/firmware/data/*.vlw
